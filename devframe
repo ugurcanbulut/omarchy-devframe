@@ -2,24 +2,31 @@
 
 # Size the browser on the active workspace to an exact device window size.
 #
-#   devframe <width> <height> [--incognito] [--devtools]
+#   devframe <width> <height> [--incognito] [--devtools[=left|right|below]]
 #   devframe move <workspace>
 #   devframe rotate
+#   devframe screenshot
+#   devframe status
 #   devframe reset
 #
 # A tabbed browser window is floated, resized, and centered in place. Chrome
 # won't draw a tabbed window narrower than 500px, so phone widths open the
 # current page in a toolbar-less --app window instead. --incognito always opens
 # a new private window showing the current page. --devtools opens DevTools in
-# its own window and centers it and the browser together, side by side. Reset
+# its own window beside or below the browser and centers the two together. Reset
 # tiles the window back, or closes it if it is one of the phone windows this
 # script opened, and closes its DevTools.
 
 set -uo pipefail
 
 MIN_TABBED_WIDTH=500
+# DevTools beside the browser (left or right): this wide, the browser's height.
 DEVTOOLS_WIDTH=900
 MIN_DEVTOOLS_WIDTH=400
+# DevTools below the browser: at least this wide, at most this tall.
+MIN_BELOW_DEVTOOLS_WIDTH=720
+DEVTOOLS_HEIGHT=600
+MIN_DEVTOOLS_HEIGHT=250
 GAP=10
 BROWSER_CLASS='^(google-chrome(-beta|-unstable)?|chromium|brave-browser(-beta|-nightly)?|microsoft-edge(-beta|-dev)?|vivaldi-stable)$'
 # Anything a Chromium browser can map while we wait for a new window, app
@@ -31,7 +38,7 @@ APP_TAG=devframe
 REDOCK_TAG=devframe-redock
 
 usage() {
-  echo "Usage: devframe <width> <height> [--incognito] [--devtools] | devframe move <workspace> | devframe rotate | devframe reset" >&2
+  echo "Usage: devframe <width> <height> [--incognito] [--devtools[=left|right|below]] | devframe move <workspace> | devframe rotate | devframe screenshot | devframe status | devframe reset" >&2
   exit 1
 }
 
@@ -47,7 +54,7 @@ notify() {
 check_requirements() {
   local tool missing=()
 
-  for tool in hyprctl jq socat wtype wl-copy wl-paste uwsm-app; do
+  for tool in hyprctl jq socat wtype wl-copy wl-paste uwsm-app grim; do
     command -v "$tool" >/dev/null || missing+=("$tool")
   done
   if ((${#missing[@]})); then
@@ -148,13 +155,16 @@ size_in_place() {
 
 # Say so when a size doesn't fit, rather than leaving part of it off-screen
 # without a word.
+# The side is where DevTools goes (left, right, below), or empty for none.
 warn_if_too_big() {
-  local width=$1 height=$2 with_devtools=$3 area_width area_height
+  local width=$1 height=$2 side=$3 area_width area_height
 
   read -r _ _ area_width area_height < <(work_area)
   if ((width > area_width || height > area_height)); then
     notify "${width}×${height} is bigger than the free screen area (${area_width}×${area_height}), so part of the window is off-screen"
-  elif [[ $with_devtools == true ]] && ((width + GAP + MIN_DEVTOOLS_WIDTH > area_width)); then
+  elif [[ $side == below ]] && ((height + GAP + MIN_DEVTOOLS_HEIGHT > area_height)); then
+    notify "There isn't room for DevTools below a ${height}px tall window, so DevTools is partly off-screen"
+  elif [[ $side == left || $side == right ]] && ((width + GAP + MIN_DEVTOOLS_WIDTH > area_width)); then
     notify "There isn't room for DevTools beside a ${width}px wide window, so DevTools is partly off-screen"
   fi
 }
@@ -412,28 +422,65 @@ open_devtools() {
   echo "$devtools"
 }
 
-devtools_width() {
-  local width=$1 area_width fit
-
-  area_width=$(work_area | cut -f3)
-  fit=$((area_width - width - 3 * GAP))
-  ((fit > DEVTOOLS_WIDTH)) && fit=$DEVTOOLS_WIDTH
-  ((fit < MIN_DEVTOOLS_WIDTH)) && fit=$MIN_DEVTOOLS_WIDTH
-  echo "$fit"
+clamp() {
+  local value=$1 low=$2 high=$3
+  ((value > high)) && value=$high
+  ((value < low)) && value=$low
+  echo "$value"
 }
 
-# Put DevTools to the right of the browser, same height, and center the two
-# together on the screen.
-place_pair() {
-  local browser=$1 devtools=$2 width=$3 height=$4 devtools_width left top
+# DevTools width and height for a browser of this size: beside it, the
+# browser's height and whatever width is left (up to DEVTOOLS_WIDTH); below
+# it, at least as wide as the browser and whatever height is left.
+devtools_size() {
+  local width=$1 height=$2 side=$3 area_width area_height
 
-  devtools_width=$(devtools_width "$width")
-  read -r left top < <(centered_origin $((width + GAP + devtools_width)) "$height")
+  read -r _ _ area_width area_height < <(work_area)
+  if [[ $side == below ]]; then
+    echo "$(clamp "$width" "$MIN_BELOW_DEVTOOLS_WIDTH" $((area_width - 2 * GAP))) $(clamp $((area_height - height - 3 * GAP)) "$MIN_DEVTOOLS_HEIGHT" "$DEVTOOLS_HEIGHT")"
+  else
+    echo "$(clamp $((area_width - width - 3 * GAP)) "$MIN_DEVTOOLS_WIDTH" "$DEVTOOLS_WIDTH") $height"
+  fi
+}
+
+# Which side of the browser a paired DevTools window sits on now.
+devtools_side() {
+  jq -r -n --argjson b "$1" --argjson d "$2" '
+    if $d.at[1] >= $b.at[1] + $b.size[1] then "below"
+    elif $d.at[0] + $d.size[0] <= $b.at[0] then "left"
+    else "right" end'
+}
+
+# Put DevTools beside or below the browser and center the two together on the
+# screen.
+place_pair() {
+  local browser=$1 devtools=$2 width=$3 height=$4 side=$5 devtools_width devtools_height left top block_width
+  local browser_x browser_y devtools_x devtools_y
+
+  read -r devtools_width devtools_height < <(devtools_size "$width" "$height" "$side")
+  case $side in
+  below)
+    block_width=$((width > devtools_width ? width : devtools_width))
+    read -r left top < <(centered_origin "$block_width" $((height + GAP + devtools_height)))
+    browser_x=$((left + (block_width - width) / 2)) browser_y=$top
+    devtools_x=$((left + (block_width - devtools_width) / 2)) devtools_y=$((top + height + GAP))
+    ;;
+  left)
+    read -r left top < <(centered_origin $((devtools_width + GAP + width)) "$height")
+    devtools_x=$left devtools_y=$top
+    browser_x=$((left + devtools_width + GAP)) browser_y=$top
+    ;;
+  *)
+    read -r left top < <(centered_origin $((width + GAP + devtools_width)) "$height")
+    browser_x=$left browser_y=$top
+    devtools_x=$((left + width + GAP)) devtools_y=$top
+    ;;
+  esac
 
   dispatch "hl.dsp.window.float({ window = \"address:$devtools\", action = \"enable\" })"
-  dispatch "hl.dsp.window.resize({ window = \"address:$devtools\", x = $devtools_width, y = $height })"
-  dispatch "hl.dsp.window.move({ window = \"address:$devtools\", x = $((left + width + GAP)), y = $top })"
-  dispatch "hl.dsp.window.move({ window = \"address:$browser\", x = $left, y = $top })"
+  dispatch "hl.dsp.window.resize({ window = \"address:$devtools\", x = $devtools_width, y = $devtools_height })"
+  dispatch "hl.dsp.window.move({ window = \"address:$devtools\", x = $devtools_x, y = $devtools_y })"
+  dispatch "hl.dsp.window.move({ window = \"address:$browser\", x = $browser_x, y = $browser_y })"
 }
 
 # Dock DevTools back if this script undocked it, so Chrome keeps its old dock
@@ -551,8 +598,10 @@ watch() {
   done < <(socat -U - "UNIX-CONNECT:$socket")
 }
 
+# side: where to open DevTools (left, right, below), or empty to leave
+# DevTools alone.
 size() {
-  local width=$1 height=$2 incognito=$3 devtools=$4 target source url address class=""
+  local width=$1 height=$2 incognito=$3 side=$4 target source url address class=""
 
   if [[ $incognito == true ]]; then
     source=$(pick_window tabbed)
@@ -589,20 +638,28 @@ size() {
     fi
   fi
 
-  warn_if_too_big "$width" "$height" "$devtools"
-
-  local devtools_address
-  if [[ $devtools == true ]]; then
-    devtools_address=$(open_devtools "$address" "$(devtools_width "$width")" "$height") || exit 1
+  local devtools devtools_address
+  if [[ -n $side ]]; then
+    devtools_address=$(open_devtools "$address" $(devtools_size "$width" "$height" "$side")) || exit 1
   else
-    devtools_address=$(find_devtools "$address" | jq -r '.address // empty')
+    # A DevTools window opened here earlier stays paired, on the side it is on.
+    devtools=$(find_devtools "$address")
+    if [[ -n $devtools ]]; then
+      devtools_address=$(jq -r '.address' <<<"$devtools")
+      side=$(devtools_side "$(window_json "$address")" "$devtools")
+    fi
   fi
-  # A DevTools window opened here earlier stays paired even with the switch off.
+
+  warn_if_too_big "$width" "$height" "$side"
   if [[ -n $devtools_address ]]; then
-    place_pair "$address" "$devtools_address" "$width" "$height"
+    place_pair "$address" "$devtools_address" "$width" "$height" "$side"
     start_watch "$address"
   fi
   focus "$address"
+}
+
+window_json() {
+  hyprctl clients -j | jq -c --arg a "$1" 'first(.[] | select(.address == $a)) // empty'
 }
 
 # Send the browser and its paired DevTools to another workspace and follow
@@ -640,10 +697,65 @@ rotate() {
     exit 1
   fi
 
-  devtools=$(find_devtools "$address" | jq -r '.address // empty')
-  warn_if_too_big "$width" "$height" "$([[ -n $devtools ]] && echo true || echo false)"
+  local side=""
+  devtools=$(find_devtools "$address")
+  [[ -n $devtools ]] && side=$(devtools_side "$target" "$devtools")
+  warn_if_too_big "$width" "$height" "$side"
   size_in_place "$address" "$width" "$height"
-  [[ -n $devtools ]] && place_pair "$address" "$devtools" "$width" "$height"
+  [[ -n $devtools ]] && place_pair "$address" "$(jq -r '.address' <<<"$devtools")" "$width" "$height" "$side"
+}
+
+# What the popup needs to know: the floating browser's size and where its
+# DevTools is, as JSON; {} when there is no floating browser.
+status() {
+  local target devtools
+
+  target=$(pick_window floating)
+  if [[ -z $target ]]; then
+    echo '{}'
+    return
+  fi
+  devtools=$(find_devtools "$(jq -r '.address' <<<"$target")")
+  jq -c -n --argjson t "$target" --arg side "$([[ -n $devtools ]] && devtools_side "$target" "$devtools")" \
+    '{ width: $t.size[0], height: $t.size[1], devtools: ($side != ""), side: (if $side == "" then null else $side end) }'
+}
+
+# Capture the browser window at its device size, the way Omarchy's own
+# screenshots work: saved to the Pictures folder, copied to the clipboard, and
+# announced with a notification that opens the editor.
+screenshot() {
+  local target dir file geometry width height editor
+
+  target=$(pick_window floating)
+  [[ -n $target ]] || target=$(pick_window any)
+  if [[ -z $target ]]; then
+    notify "No browser window on this workspace"
+    exit 1
+  fi
+
+  [[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs
+  dir="${OMARCHY_SCREENSHOT_DIR:-${XDG_PICTURES_DIR:-$HOME/Pictures}}"
+  mkdir -p "$dir"
+  read -r width height < <(jq -r '.size | "\(.[0]) \(.[1])"' <<<"$target")
+  file="$dir/devframe-${width}x${height}-$(date +'%Y-%m-%d_%H-%M-%S').png"
+  geometry=$(jq -r '"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"' <<<"$target")
+
+  # Let the popup finish fading out so it doesn't end up in the picture.
+  sleep 0.4
+  if ! grim -g "$geometry" "$file"; then
+    notify "Couldn't take the screenshot"
+    exit 1
+  fi
+  wl-copy --type image/png <"$file" >/dev/null 2>&1
+
+  editor="${OMARCHY_SCREENSHOT_EDITOR:-tensaku-edit}"
+  if command -v omarchy-notification-send >/dev/null; then
+    omarchy-notification-send "Screenshot saved to clipboard and file" "${width}×${height} · Click to edit" \
+      --image "$file" --exec "$editor" "$file" >/dev/null 2>&1 || true
+  else
+    notify "Screenshot saved to $file and copied to the clipboard"
+  fi
+  echo "$file"
 }
 
 reset() {
@@ -669,7 +781,7 @@ reset() {
 
 trap clear_rules EXIT
 
-[[ ${1:-} =~ ^(reset|rotate|watch|move|[0-9]+)$ ]] && check_requirements
+[[ ${1:-} =~ ^(reset|rotate|screenshot|watch|move|[0-9]+)$ ]] && check_requirements
 
 case ${1:-} in
 reset)
@@ -677,6 +789,12 @@ reset)
   ;;
 rotate)
   rotate
+  ;;
+status)
+  status
+  ;;
+screenshot)
+  screenshot
   ;;
 watch)
   [[ ${2:-} =~ ^0x[0-9a-f]+$ ]] || usage
@@ -688,16 +806,17 @@ move)
   ;;
 [0-9]*)
   [[ $1 =~ ^[0-9]+$ && ${2:-} =~ ^[0-9]+$ ]] || usage
-  width=$1 height=$2 incognito=false devtools=false
+  width=$1 height=$2 incognito=false side=""
   shift 2
   for flag in "$@"; do
     case $flag in
     --incognito) incognito=true ;;
-    --devtools) devtools=true ;;
+    --devtools) side=right ;;
+    --devtools=left | --devtools=right | --devtools=below) side=${flag#--devtools=} ;;
     *) usage ;;
     esac
   done
-  size "$width" "$height" "$incognito" "$devtools"
+  size "$width" "$height" "$incognito" "$side"
   ;;
 *)
   usage

@@ -13,12 +13,18 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
   | Full HD | 1920 × 1080 |
   | MacBook Pro 16" | 1728 × 1117 |
   | MacBook Pro 14" | 1512 × 982 |
+  | HD laptop | 1366 × 768 |
   | iPad (11") landscape / portrait | 1180 × 820 / 820 × 1180 |
   | iPad Pro 13" landscape / portrait | 1376 × 1032 / 1032 × 1376 |
+  | iPad mini portrait | 744 × 1133 |
   | iPhone 16 Pro | 402 × 874 |
   | iPhone 16 Pro Max | 440 × 956 |
+  | iPhone 16e | 390 × 844 |
+  | iPhone SE | 375 × 667 |
+  | Pixel 9 | 412 × 923 |
+  | Galaxy S25 | 360 × 780 |
 
-  The preset is the size of the whole browser window, toolbar included. In Chrome and Chromium the page itself gets 87px less height.
+  The preset is the size of the whole browser window, toolbar included. In Chrome and Chromium the page itself gets 87px less height. The preset your browser is at right now is highlighted in the popup, and the bar icon's tooltip shows the current size.
 
   Presets that don't fit on your screen are dimmed in the popup. You can still pick one: the window then starts at the top-left corner of the screen, so the start of the page stays visible, and a notification says part of it is off-screen.
 
@@ -26,11 +32,18 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
 - **Incognito.** With the switch on, any preset opens the current page in a new private window at that size instead of resizing your window.
 
   Phone and incognito windows open in the same browser as the window you started from. With no browser window on the workspace, they open in your default browser.
-- **DevTools.** With the switch on, DevTools opens in its own window to the right of the browser, at the same height. The two are centered together. When you switch tabs, DevTools switches to the new tab.
+- **DevTools.** With the switch on, DevTools opens in its own window next to the browser, and the two are centered together. Choose where it goes under the switch:
+  - **Left** or **Right:** at the browser's height, up to 900px wide.
+  - **Below:** at least as wide as the browser (720px minimum), and as tall as the screen allows, up to 600px.
+
+  When you switch tabs, DevTools switches to the new tab.
 - **Workspace.** Buttons 1–10 move the browser and its DevTools to that workspace and take you there, like Super+Shift+number.
-- **Rotate.** Swaps the window between portrait and landscape, keeping its DevTools beside it. A normal browser window can't be narrower than 500px, so a window only rotates if the new width is at least that; phone windows always rotate.
+- **Rotate.** Swaps the window between portrait and landscape, keeping its DevTools in place. A normal browser window can't be narrower than 500px, so a window only rotates if the new width is at least that; phone windows always rotate.
+- **Capture.** Takes a screenshot of just the browser window at its device size, the way Omarchy's own screenshots work: saved to your Pictures folder as `devframe-<width>x<height>-<date>.png`, copied to the clipboard, and announced with a notification you can click to edit it.
 - **Reset.** Tiles the browser back into the layout, closes its DevTools, and closes phone windows.
 - **Custom presets.** Add your own sizes, see below.
+
+The Incognito and DevTools switches, and the DevTools position, are remembered across restarts. They're saved on the Devframe entry in `~/.config/omarchy/shell.json`.
 
 ## Install
 
@@ -82,7 +95,9 @@ If something is missing, Devframe shows a notification saying what.
 | `Enter` / `Space` | Activate the selected item |
 | `i` | Turn Incognito on or off |
 | `d` | Turn DevTools on or off |
+| `h` / `l` on the Left · Right · Below row | Pick where DevTools goes |
 | `o` | Rotate |
+| `s` | Capture a screenshot |
 | `r` | Reset |
 | `Esc` | Close |
 
@@ -93,9 +108,11 @@ Right-clicking the bar icon also turns Incognito on or off.
 The script behind the widget works on its own too, for example from your own key bindings. It lives at `~/.config/omarchy/plugins/ugurcanbulut.devframe/devframe`:
 
 ```bash
-devframe 1920 1080 [--incognito] [--devtools]
+devframe 1920 1080 [--incognito] [--devtools[=left|right|below]]
 devframe move 3
 devframe rotate
+devframe screenshot
+devframe status
 devframe reset
 ```
 
