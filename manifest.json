@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ugurcanbulut.devframe",
   "name": "Devframe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Ugurcan Bulut",
   "description": "Test websites at real device sizes: browser presets, DevTools beside it, incognito, workspaces",
   "kinds": [
