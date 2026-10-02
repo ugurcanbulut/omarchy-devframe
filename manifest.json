@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ugurcanbulut.devframe",
+  "name": "Devframe",
+  "version": "1.0.0",
+  "author": "Ugurcan Bulut",
+  "description": "Test websites at real device sizes: browser presets, DevTools beside it, incognito, workspaces",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Devframe",
+    "description": "Test websites at real device sizes: browser presets, DevTools beside it, incognito, workspaces",
+    "category": "Tools",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

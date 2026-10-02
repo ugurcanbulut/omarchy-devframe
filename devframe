@@ -1,0 +1,548 @@
+#!/bin/bash
+
+# Size the browser on the active workspace to an exact device window size.
+#
+#   devframe <width> <height> [--incognito] [--devtools]
+#   devframe move <workspace>
+#   devframe reset
+#
+# A tabbed browser window is floated, resized, and centered in place. Chrome
+# won't draw a tabbed window narrower than 500px, so phone widths open the
+# current page in a toolbar-less --app window instead. --incognito always opens
+# a new private window showing the current page. --devtools opens DevTools in
+# its own window and centers it and the browser together, side by side. Reset
+# tiles the window back, or closes it if it is one of the phone windows this
+# script opened, and closes its DevTools.
+
+set -uo pipefail
+
+MIN_TABBED_WIDTH=500
+DEVTOOLS_WIDTH=900
+MIN_DEVTOOLS_WIDTH=400
+GAP=10
+BROWSER_CLASS='^(google-chrome(-beta|-unstable)?|chromium|brave-browser(-beta|-nightly)?|microsoft-edge(-beta|-dev)?|vivaldi-stable)$'
+# Anything a Chromium browser can map while we wait for a new window, app
+# windows included (their class is e.g. chrome-example.com__-Default).
+NEW_WINDOW_CLASS='^(google-chrome.*|chromium.*|brave.*|microsoft-edge.*|vivaldi.*|chrome-.*)$'
+APP_TAG=devframe
+# Set on a DevTools window this script undocked, so reset docks it back and
+# Chrome keeps opening DevTools docked as before.
+REDOCK_TAG=devframe-redock
+
+usage() {
+  echo "Usage: devframe <width> <height> [--incognito] [--devtools] | devframe move <workspace> | devframe reset" >&2
+  exit 1
+}
+
+notify() {
+  if command -v notify-send >/dev/null; then
+    notify-send -a Devframe "Devframe" "$1"
+  else
+    echo "devframe: $1" >&2
+  fi
+}
+
+dispatch() {
+  hyprctl dispatch "$1" >/dev/null
+}
+
+shortcut() {
+  dispatch "hl.dsp.send_shortcut({ window = \"address:$1\", mods = \"$2\", key = \"$3\" })"
+}
+
+focus() {
+  dispatch "hl.dsp.focus({ window = \"address:$1\" })"
+  sleep 0.15
+}
+
+active_window() {
+  hyprctl activewindow -j | jq -r '.address // empty'
+}
+
+# wtype types into whatever has keyboard focus, so only type while the
+# intended window still has it.
+type_into() {
+  local address=$1
+  shift
+  [[ $(active_window) == "$address" ]] || return 1
+  wtype "$@"
+}
+
+active_workspace() {
+  hyprctl activeworkspace -j | jq '.id'
+}
+
+# x y width height of the active workspace's monitor, minus the bar.
+work_area() {
+  hyprctl monitors -j | jq -r --argjson ws "$(active_workspace)" '
+    first(.[] | select(.activeWorkspace.id == $ws))
+    | [.x + .reserved[0], .y + .reserved[1],
+       (.width / .scale | floor) - .reserved[0] - .reserved[2],
+       (.height / .scale | floor) - .reserved[1] - .reserved[3]]
+    | @tsv'
+}
+
+has_tag() {
+  jq -e --arg tag "$2" 'any(.tags[]; rtrimstr("*") == $tag)' <<<"$1" >/dev/null
+}
+
+# Most recently focused browser window on the active workspace, as JSON.
+# Kinds: "any" (tabbed or phone app window), "tabbed", "floating".
+pick_window() {
+  local kind=$1
+
+  hyprctl clients -j | jq -c \
+    --argjson ws "$(active_workspace)" \
+    --arg re "$BROWSER_CLASS" \
+    --arg tag "$APP_TAG" \
+    --arg kind "$kind" '
+      [.[]
+        | select(.workspace.id == $ws)
+        | select(.title | startswith("DevTools") | not)
+        | .app = any(.tags[]; rtrimstr("*") == $tag)
+        | select((.class | test($re)) or .app)
+        | select($kind != "tabbed" or (.app | not))
+        | select($kind != "floating" or .floating)]
+      | sort_by(.focusHistoryID) | first // empty'
+}
+
+size_in_place() {
+  local window="address:$1" width=$2 height=$3
+
+  dispatch "hl.dsp.window.float({ window = \"$window\", action = \"enable\" })"
+  dispatch "hl.dsp.window.resize({ window = \"$window\", x = $width, y = $height })"
+  dispatch "hl.dsp.window.center({ window = \"$window\" })"
+}
+
+# Copy the address bar of a tabbed window through the clipboard, then put the
+# previous clipboard back. Chrome only copies while it holds keyboard focus.
+grab_url() {
+  local address=$1 saved type url
+
+  focus "$address"
+
+  saved=$(mktemp)
+  type=$(wl-paste --list-types 2>/dev/null | head -1)
+  [[ -n $type ]] && wl-paste --no-newline --type "$type" >"$saved" 2>/dev/null
+  wl-copy --clear
+
+  shortcut "$address" CTRL L
+  sleep 0.1
+  shortcut "$address" CTRL C
+  sleep 0.2
+  shortcut "$address" "" Escape
+  url=$(wl-paste --no-newline 2>/dev/null)
+
+  if [[ -n $type ]]; then
+    wl-copy --type "$type" <"$saved"
+  else
+    wl-copy --clear
+  fi
+  rm -f "$saved"
+
+  [[ $url =~ ^[a-z][a-z0-9+.-]*: ]] && echo "$url"
+}
+
+browser_exec() {
+  local desktop
+  desktop=$(env -u BROWSER xdg-settings get default-web-browser 2>/dev/null)
+  sed -n 's/^Exec=\([^ ]*\).*/\1/p' {~/.local,/usr}/share/applications/"$desktop" 2>/dev/null | head -1
+}
+
+clear_rules() {
+  hyprctl eval "
+    if devframe_rule then devframe_rule:set_enabled(false) end; devframe_rule = nil
+    if devframe_devtools_rule then devframe_devtools_rule:set_enabled(false) end; devframe_devtools_rule = nil
+  " >/dev/null 2>&1
+}
+
+# Launch the browser with the given args, size the window it maps, and print
+# its address. The browser hands new windows to its running process, so the
+# window can't be matched by PID; a short-lived rule floats and sizes whatever
+# browser window maps next instead, so it never flashes into the tiled layout.
+open_new() {
+  local width=$1 height=$2 is_app=$3
+  shift 3
+  local exec before address
+
+  exec=$(browser_exec)
+  [[ -n $exec ]] || { notify "Couldn't find the default browser"; exit 1; }
+
+  before=$(hyprctl clients -j | jq -c '[.[].address]')
+
+  hyprctl eval "if devframe_rule then devframe_rule:set_enabled(false) end; devframe_rule = hl.window_rule({ match = { class = '$NEW_WINDOW_CLASS' }, float = true, size = { $width, $height }, center = true })" >/dev/null
+
+  setsid -f uwsm-app -- "$exec" "$@" >/dev/null 2>&1
+
+  for _ in $(seq 1 50); do
+    address=$(hyprctl clients -j | jq -r \
+      --argjson before "$before" \
+      --arg re "$NEW_WINDOW_CLASS" '
+        first(.[] | select((.address as $a | $before | index($a) | not) and (.class | test($re)))) | .address // empty')
+    [[ -n $address ]] && break
+    sleep 0.1
+  done
+
+  clear_rules
+
+  if [[ -z $address ]]; then
+    notify "The browser window didn't open"
+    exit 1
+  fi
+
+  [[ $is_app == true ]] && dispatch "hl.dsp.window.tag({ window = \"address:$address\", tag = \"+$APP_TAG\" })"
+  # Chrome can restore its own saved size over the rule; set it once more.
+  size_in_place "$address" "$width" "$height"
+  echo "$address"
+}
+
+private_flag() {
+  if "$(browser_exec)" --help 2>/dev/null | grep -q MOZ_LOG; then
+    echo "--private-window"
+  elif [[ $(browser_exec) =~ edge ]]; then
+    echo "--inprivate"
+  else
+    echo "--incognito"
+  fi
+}
+
+# DevTools windows carry a tag naming the browser window they inspect.
+devtools_tag() {
+  echo "devframe-devtools-${1#0x}"
+}
+
+find_devtools() {
+  hyprctl clients -j | jq -c --arg tag "$(devtools_tag "$1")" '
+    first(.[] | select(any(.tags[]; rtrimstr("*") == $tag))) // empty'
+}
+
+window_pid() {
+  hyprctl clients -j | jq -r --arg a "$1" 'first(.[] | select(.address == $a)) | .pid // empty'
+}
+
+# DevTools windows of one browser process.
+devtools_windows() {
+  hyprctl clients -j | jq -c --argjson pid "$1" '[.[] | select(.pid == $pid and (.title | startswith("DevTools"))) | .address]'
+}
+
+wait_new_devtools() {
+  local pid=$1 before=$2 address
+
+  for _ in $(seq 1 15); do
+    address=$(hyprctl clients -j | jq -r --argjson pid "$pid" --argjson before "$before" '
+      first(.[] | select(.pid == $pid and (.title | startswith("DevTools")) and (.address as $a | $before | index($a) | not))) | .address // empty')
+    [[ -n $address ]] && { echo "$address"; return; }
+    sleep 0.1
+  done
+}
+
+# Ctrl+Shift+C (inspect element) is the one DevTools shortcut that never closes
+# DevTools, so pressing it twice opens DevTools for the active tab and leaves
+# inspect mode off. Prints the DevTools window that opened, if one did.
+probe_devtools() {
+  local browser=$1 pid=$2 before=$3
+
+  shortcut "$browser" "CTRL SHIFT" C
+  sleep 0.25
+  shortcut "$browser" "CTRL SHIFT" C
+  wait_new_devtools "$pid" "$before"
+}
+
+set_devtools_rule() {
+  hyprctl eval "if devframe_devtools_rule then devframe_devtools_rule:set_enabled(false) end; devframe_devtools_rule = hl.window_rule({ match = { initial_title = '^DevTools' }, float = true, size = { $1, $2 } })" >/dev/null
+}
+
+# Open DevTools for a browser window in its own window and print its address.
+# Chrome opens DevTools wherever it was docked last; a docked one is undocked
+# through the DevTools command menu, which has keyboard focus at that point.
+open_devtools() {
+  local browser=$1 width=$2 height=$3 pid before devtools redock=false
+
+  devtools=$(find_devtools "$browser")
+  [[ -n $devtools ]] && { jq -r '.address' <<<"$devtools"; return; }
+
+  pid=$(window_pid "$browser")
+  before=$(devtools_windows "$pid")
+  focus "$browser"
+  set_devtools_rule "$width" "$height"
+  devtools=$(probe_devtools "$browser" "$pid" "$before")
+
+  if [[ -z $devtools ]]; then
+    if [[ $(jq 'length' <<<"$before") -gt 0 ]]; then
+      # DevTools is already open in a window this script didn't place; Chrome
+      # only toggled inspect mode in it, so there is nothing safe to type.
+      clear_rules
+      notify "Close the open DevTools window first, then pick the size again"
+      return 1
+    fi
+    sleep 0.3
+    if type_into "$browser" -M ctrl -M shift p -m shift -m ctrl &&
+      sleep 0.4 && type_into "$browser" "undock" &&
+      sleep 0.3 && type_into "$browser" -k Return; then
+      devtools=$(wait_new_devtools "$pid" "$before")
+      redock=true
+    fi
+  fi
+
+  clear_rules
+
+  if [[ -z $devtools ]]; then
+    notify "DevTools didn't open in its own window"
+    return 1
+  fi
+
+  dispatch "hl.dsp.window.tag({ window = \"address:$devtools\", tag = \"+$(devtools_tag "$browser")\" })"
+  [[ $redock == true ]] && dispatch "hl.dsp.window.tag({ window = \"address:$devtools\", tag = \"+$REDOCK_TAG\" })"
+  echo "$devtools"
+}
+
+devtools_width() {
+  local width=$1 area_width fit
+
+  area_width=$(work_area | cut -f3)
+  fit=$((area_width - width - 3 * GAP))
+  ((fit > DEVTOOLS_WIDTH)) && fit=$DEVTOOLS_WIDTH
+  ((fit < MIN_DEVTOOLS_WIDTH)) && fit=$MIN_DEVTOOLS_WIDTH
+  echo "$fit"
+}
+
+# Put DevTools to the right of the browser, same height, and center the two
+# together on the screen.
+place_pair() {
+  local browser=$1 devtools=$2 width=$3 height=$4 devtools_width x y area_width area_height left top
+
+  devtools_width=$(devtools_width "$width")
+  read -r x y area_width area_height < <(work_area)
+  left=$((x + (area_width - width - GAP - devtools_width) / 2))
+  top=$((y + (area_height - height) / 2))
+
+  dispatch "hl.dsp.window.float({ window = \"address:$devtools\", action = \"enable\" })"
+  dispatch "hl.dsp.window.resize({ window = \"address:$devtools\", x = $devtools_width, y = $height })"
+  dispatch "hl.dsp.window.move({ window = \"address:$devtools\", x = $((left + width + GAP)), y = $top })"
+  dispatch "hl.dsp.window.move({ window = \"address:$browser\", x = $left, y = $top })"
+}
+
+# Dock DevTools back if this script undocked it, so Chrome keeps its old dock
+# side, then close it.
+close_devtools() {
+  local browser=$1 devtools=$2 address
+
+  address=$(jq -r '.address' <<<"$devtools")
+
+  if has_tag "$devtools" "$REDOCK_TAG"; then
+    focus "$address"
+    # Ctrl+Shift+D: DevTools' "switch to the last dock position".
+    if type_into "$address" -M ctrl -M shift d -m shift -m ctrl; then
+      for _ in $(seq 1 15); do
+        hyprctl clients -j | jq -e --arg a "$address" 'any(.[]; .address == $a)' >/dev/null || break
+        sleep 0.1
+      done
+      sleep 0.3
+      # Docked and open, so this closes it.
+      shortcut "$browser" "CTRL SHIFT" I
+      return
+    fi
+  fi
+
+  dispatch "hl.dsp.window.close({ window = \"address:$address\" })"
+}
+
+watch_pidfile() {
+  echo "${XDG_RUNTIME_DIR:-/tmp}/devframe-watch-${1#0x}.pid"
+}
+
+start_watch() {
+  local pidfile
+  # Phone windows have a single tab, so there is nothing to follow.
+  hyprctl clients -j | jq -e --arg a "$1" --arg tag "$APP_TAG" \
+    'any(.[]; .address == $a and any(.tags[]; rtrimstr("*") == $tag))' >/dev/null && return
+  pidfile=$(watch_pidfile "$1")
+  [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null && return
+  setsid -f "$0" watch "$1" >/dev/null 2>&1
+}
+
+stop_watch() {
+  local pidfile
+  pidfile=$(watch_pidfile "$1")
+  [[ -f $pidfile ]] && kill "$(<"$pidfile")" 2>/dev/null
+  rm -f "$pidfile"
+}
+
+# Swap in the active tab's DevTools after a title change. A new DevTools
+# window from the probe means the active tab had none, so the tab changed: it
+# takes the old one's place and the old one closes. Fails once the browser
+# has no paired DevTools left.
+follow_tab() {
+  local browser=$1 devtools address pid before new size at
+
+  devtools=$(find_devtools "$browser")
+  [[ -n $devtools ]] || return 1
+  # Only while the browser has focus, so keys never go anywhere else.
+  [[ $(active_window) == "$browser" ]] || return 0
+
+  address=$(jq -r '.address' <<<"$devtools")
+  size=$(jq -r '.size | "\(.[0]) \(.[1])"' <<<"$devtools")
+  at=$(jq -r '.at | "\(.[0]) \(.[1])"' <<<"$devtools")
+  pid=$(window_pid "$browser")
+  before=$(devtools_windows "$pid")
+
+  set_devtools_rule $size
+  new=$(probe_devtools "$browser" "$pid" "$before")
+  clear_rules
+  [[ -n $new ]] || return 0
+
+  dispatch "hl.dsp.window.tag({ window = \"address:$new\", tag = \"+$(devtools_tag "$browser")\" })"
+  has_tag "$devtools" "$REDOCK_TAG" && dispatch "hl.dsp.window.tag({ window = \"address:$new\", tag = \"+$REDOCK_TAG\" })"
+  set -- $size $at
+  dispatch "hl.dsp.window.float({ window = \"address:$new\", action = \"enable\" })"
+  dispatch "hl.dsp.window.resize({ window = \"address:$new\", x = $1, y = $2 })"
+  dispatch "hl.dsp.window.move({ window = \"address:$new\", x = $3, y = $4 })"
+  dispatch "hl.dsp.window.close({ window = \"address:$address\" })"
+  focus "$browser"
+}
+
+# Keep the paired DevTools on the browser's active tab. Chrome gives every tab
+# its own DevTools and a script can't ask which tab is active; switching tabs
+# shows up only as a window title change, so follow those. Tabs with
+# identical titles can't be told apart.
+watch() {
+  local browser=$1 id=${1#0x} pidfile line socket
+
+  pidfile=$(watch_pidfile "$browser")
+  echo $$ >"$pidfile"
+  trap 'clear_rules; rm -f "$pidfile"; pkill -P $$' EXIT
+  trap exit TERM INT
+
+  socket="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+  while read -r line; do
+    case $line in
+    "closewindow>>$id") break ;;
+    "windowtitlev2>>$id,"*) ;;
+    *) continue ;;
+    esac
+    # A tab switch or page load fires several title changes; act once they settle.
+    while read -r -t 0.4 line; do
+      [[ $line == "closewindow>>$id" ]] && break 2
+    done
+    follow_tab "$browser" || break
+  done < <(socat -U - "UNIX-CONNECT:$socket")
+}
+
+size() {
+  local width=$1 height=$2 incognito=$3 devtools=$4 target source url address
+
+  if [[ $incognito == true ]]; then
+    source=$(pick_window tabbed)
+    [[ -n $source ]] && url=$(grab_url "$(jq -r '.address' <<<"$source")")
+
+    if ((width >= MIN_TABBED_WIDTH)); then
+      address=$(open_new "$width" "$height" false "$(private_flag)" --new-window ${url:+"$url"}) || exit 1
+    elif [[ -n ${url:-} ]]; then
+      address=$(open_new "$width" "$height" true "$(private_flag)" --app="$url") || exit 1
+    else
+      notify "Open the page in a browser window on this workspace first"
+      exit 1
+    fi
+  else
+    target=$(pick_window any)
+    if [[ -z $target ]]; then
+      notify "No browser window on this workspace"
+      exit 1
+    fi
+    address=$(jq -r '.address' <<<"$target")
+
+    if [[ $(jq -r '.app' <<<"$target") == true ]] || ((width >= MIN_TABBED_WIDTH)); then
+      size_in_place "$address" "$width" "$height"
+    else
+      url=$(grab_url "$address")
+      if [[ -z $url ]]; then
+        notify "Couldn't read the current page address"
+        exit 1
+      fi
+      address=$(open_new "$width" "$height" true --app="$url") || exit 1
+    fi
+  fi
+
+  local devtools_address
+  if [[ $devtools == true ]]; then
+    devtools_address=$(open_devtools "$address" "$(devtools_width "$width")" "$height") || exit 1
+  else
+    devtools_address=$(find_devtools "$address" | jq -r '.address // empty')
+  fi
+  # A DevTools window opened here earlier stays paired even with the switch off.
+  if [[ -n $devtools_address ]]; then
+    place_pair "$address" "$devtools_address" "$width" "$height"
+    start_watch "$address"
+  fi
+  focus "$address"
+}
+
+# Send the browser and its paired DevTools to another workspace and follow
+# them there, like Super+Shift+<number>.
+move_to() {
+  local workspace=$1 target address devtools
+
+  target=$(pick_window any)
+  if [[ -z $target ]]; then
+    notify "No browser window on this workspace"
+    exit 1
+  fi
+
+  address=$(jq -r '.address' <<<"$target")
+  devtools=$(find_devtools "$address" | jq -r '.address // empty')
+  [[ -n $devtools ]] && dispatch "hl.dsp.window.move({ window = \"address:$devtools\", workspace = \"$workspace\", follow = false })"
+  dispatch "hl.dsp.window.move({ window = \"address:$address\", workspace = \"$workspace\" })"
+}
+
+reset() {
+  local target address devtools
+
+  target=$(pick_window floating)
+  if [[ -z $target ]]; then
+    notify "No floating browser window on this workspace"
+    exit 1
+  fi
+
+  address=$(jq -r '.address' <<<"$target")
+  stop_watch "$address"
+  devtools=$(find_devtools "$address")
+  [[ -n $devtools ]] && close_devtools "$address" "$devtools"
+
+  if [[ $(jq -r '.app' <<<"$target") == true ]]; then
+    dispatch "hl.dsp.window.close({ window = \"address:$address\" })"
+  else
+    dispatch "hl.dsp.window.float({ window = \"address:$address\", action = \"disable\" })"
+  fi
+}
+
+trap clear_rules EXIT
+
+case ${1:-} in
+reset)
+  reset
+  ;;
+watch)
+  [[ ${2:-} =~ ^0x[0-9a-f]+$ ]] || usage
+  watch "$2"
+  ;;
+move)
+  [[ ${2:-} =~ ^[0-9]+$ ]] || usage
+  move_to "$2"
+  ;;
+[0-9]*)
+  [[ $1 =~ ^[0-9]+$ && ${2:-} =~ ^[0-9]+$ ]] || usage
+  width=$1 height=$2 incognito=false devtools=false
+  shift 2
+  for flag in "$@"; do
+    case $flag in
+    --incognito) incognito=true ;;
+    --devtools) devtools=true ;;
+    *) usage ;;
+    esac
+  done
+  size "$width" "$height" "$incognito" "$devtools"
+  ;;
+*)
+  usage
+  ;;
+esac
