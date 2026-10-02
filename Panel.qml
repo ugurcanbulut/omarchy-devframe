@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Hyprland
 import qs.Commons
@@ -39,7 +40,36 @@ Panel {
   readonly property int devtoolsIndex: incognitoIndex + 1
   readonly property int resetIndex: incognitoIndex + 2
 
+  // Free area of the focused monitor in logical pixels, minus the bar. The
+  // script works on the same monitor.
+  readonly property var freeArea: {
+    var monitor = Hyprland.focusedMonitor
+    if (!monitor || !monitor.scale) return null
+    var reserved = (monitor.lastIpcObject && monitor.lastIpcObject.reserved) || [0, 0, 0, 0]
+    return {
+      width: Math.floor(monitor.width / monitor.scale) - reserved[0] - reserved[2],
+      height: Math.floor(monitor.height / monitor.scale) - reserved[1] - reserved[3]
+    }
+  }
+
+  // With DevTools on, the preset also needs room for the narrowest DevTools
+  // beside it (the script's GAP + MIN_DEVTOOLS_WIDTH).
+  function fits(preset) {
+    if (!freeArea) return true
+    var width = preset.width + (root.devtools ? 410 : 0)
+    return width <= freeArea.width && preset.height <= freeArea.height
+  }
+
   function glyph(codePoint) { return String.fromCodePoint(codePoint) }
+
+  function ensureVisible(item) {
+    var top = item.mapToItem(column, 0, 0).y
+    var bottom = top + item.height
+    var margin = Style.space(8)
+    if (top < scroller.contentY + margin) scroller.contentY = Math.max(0, top - margin)
+    else if (bottom > scroller.contentY + scroller.height - margin)
+      scroller.contentY = Math.min(scroller.contentHeight - scroller.height, bottom + margin - scroller.height)
+  }
 
   function run(args) {
     root.close()
@@ -76,7 +106,12 @@ Panel {
     cursorIndex = Math.max(0, Math.min(resetIndex, next))
   }
 
-  onOpenedChanged: if (opened) cursorIndex = -1
+  onOpenedChanged: {
+    if (!opened) return
+    cursorIndex = -1
+    scroller.contentY = 0
+    Hyprland.refreshMonitors()
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -121,144 +156,164 @@ Panel {
         else if (t === "r") root.activate(root.resetIndex)
       }
 
-      Column {
-        id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(2)
+      // Scrolls when the popup is taller than the screen allows.
+      Flickable {
+        id: scroller
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        Repeater {
-          model: root.presets
+        Column {
+          id: column
+          width: scroller.width
+          spacing: Style.space(2)
 
-          Column {
-            id: presetRow
-            required property var modelData
-            required property int index
-            readonly property bool firstInGroup: index === 0 || root.presets[index - 1].group !== modelData.group
+          Repeater {
+            model: root.presets
 
-            width: column.width
-            spacing: Style.space(4)
-            topPadding: firstInGroup && index > 0 ? Style.space(8) : 0
+            Column {
+              id: presetRow
+              required property var modelData
+              required property int index
+              readonly property bool firstInGroup: index === 0 || root.presets[index - 1].group !== modelData.group
 
-            PanelSectionHeader {
-              visible: presetRow.firstInGroup
-              text: presetRow.modelData.group
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-            }
+              width: column.width
+              spacing: Style.space(4)
+              topPadding: firstInGroup && index > 0 ? Style.space(8) : 0
 
-            Button {
-              width: parent.width
-              leftAlign: true
-              iconText: root.glyph(presetRow.modelData.icon)
-              text: presetRow.modelData.label
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              hasCursor: root.cursorIndex === presetRow.index
-              onClicked: root.applyPreset(presetRow.modelData)
-              onHovered: function(h) { if (h) root.cursorIndex = presetRow.index }
+              PanelSectionHeader {
+                visible: presetRow.firstInGroup
+                text: presetRow.modelData.group
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+              }
 
-              Text {
-                anchors.right: parent.right
-                anchors.rightMargin: Style.spacing.controlPaddingX
-                anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
-                text: presetRow.modelData.width + " × " + presetRow.modelData.height
-                color: root.bar.foreground
-                opacity: 0.6
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.bodySmall
+              Button {
+                readonly property bool fits: root.fits(presetRow.modelData)
+
+                width: parent.width
+                leftAlign: true
+                iconText: root.glyph(presetRow.modelData.icon)
+                text: presetRow.modelData.label
+                // Still usable, but dimmed when it won't fit on this screen.
+                opacity: fits ? 1 : 0.45
+                tooltipText: fits ? "" : "Bigger than this screen"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                hasCursor: root.cursorIndex === presetRow.index
+                onClicked: root.applyPreset(presetRow.modelData)
+                onHovered: function(h) { if (h) root.cursorIndex = presetRow.index }
+                onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+
+                Text {
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.spacing.controlPaddingX
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: presetRow.modelData.width + " × " + presetRow.modelData.height
+                  color: root.bar.foreground
+                  opacity: 0.6
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
               }
             }
           }
-        }
 
-        Item { width: 1; height: Style.space(10) }
+          Item { width: 1; height: Style.space(10) }
 
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
+          PanelSeparator {
+            foreground: root.bar.foreground
+          }
 
-        Item { width: 1; height: Style.space(10) }
+          Item { width: 1; height: Style.space(10) }
 
-        PanelSectionHeader {
-          text: "WORKSPACE"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
-        }
+          PanelSectionHeader {
+            text: "WORKSPACE"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
 
-        Item { width: 1; height: Style.space(4) }
+          Item { width: 1; height: Style.space(4) }
 
-        // Moves the browser and its DevTools there, and follows them.
-        Grid {
-          id: workspaceGrid
-          width: parent.width
-          columns: root.workspaceColumns
-          spacing: Style.space(6)
+          // Moves the browser and its DevTools there, and follows them.
+          Grid {
+            id: workspaceGrid
+            width: parent.width
+            columns: root.workspaceColumns
+            spacing: Style.space(6)
 
-          readonly property real cellWidth: (width - spacing * (columns - 1)) / columns
+            readonly property real cellWidth: (width - spacing * (columns - 1)) / columns
 
-          Repeater {
-            model: root.workspaceCount
+            Repeater {
+              model: root.workspaceCount
 
-            Button {
-              required property int index
-              readonly property int workspace: index + 1
+              Button {
+                required property int index
+                readonly property int workspace: index + 1
 
-              width: workspaceGrid.cellWidth
-              text: String(workspace)
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              bordered: true
-              active: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === workspace
-              hasCursor: root.cursorIndex === root.workspaceStart + index
-              onClicked: root.activate(root.workspaceStart + index)
-              onHovered: function(h) { if (h) root.cursorIndex = root.workspaceStart + index }
+                width: workspaceGrid.cellWidth
+                text: String(workspace)
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                active: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === workspace
+                hasCursor: root.cursorIndex === root.workspaceStart + index
+                onClicked: root.activate(root.workspaceStart + index)
+                onHovered: function(h) { if (h) root.cursorIndex = root.workspaceStart + index }
+                onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+              }
             }
           }
-        }
 
-        Item { width: 1; height: Style.space(12) }
+          Item { width: 1; height: Style.space(12) }
 
-        Toggle {
-          width: parent.width
-          label: "Incognito"
-          description: "Open the current page in a new private window"
-          checked: root.incognito
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
-          hasCursor: root.cursorIndex === root.incognitoIndex
-          onClicked: root.incognito = !root.incognito
-          onHovered: function(h) { if (h) root.cursorIndex = root.incognitoIndex }
-        }
+          Toggle {
+            width: parent.width
+            label: "Incognito"
+            description: "Open the current page in a new private window"
+            checked: root.incognito
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            hasCursor: root.cursorIndex === root.incognitoIndex
+            onClicked: root.incognito = !root.incognito
+            onHovered: function(h) { if (h) root.cursorIndex = root.incognitoIndex }
+            onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+          }
 
-        Item { width: 1; height: Style.space(4) }
+          Item { width: 1; height: Style.space(4) }
 
-        Toggle {
-          width: parent.width
-          label: "DevTools"
-          description: "Open DevTools in its own window beside the browser"
-          checked: root.devtools
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
-          hasCursor: root.cursorIndex === root.devtoolsIndex
-          onClicked: root.devtools = !root.devtools
-          onHovered: function(h) { if (h) root.cursorIndex = root.devtoolsIndex }
-        }
+          Toggle {
+            width: parent.width
+            label: "DevTools"
+            description: "Open DevTools in its own window beside the browser"
+            checked: root.devtools
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            hasCursor: root.cursorIndex === root.devtoolsIndex
+            onClicked: root.devtools = !root.devtools
+            onHovered: function(h) { if (h) root.cursorIndex = root.devtoolsIndex }
+            onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+          }
 
-        Item { width: 1; height: Style.space(4) }
+          Item { width: 1; height: Style.space(4) }
 
-        Button {
-          width: parent.width
-          leftAlign: true
-          iconText: root.glyph(0xF05B2) // md-window-restore
-          text: "Reset window"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
-          hasCursor: root.cursorIndex === root.resetIndex
-          onClicked: root.activate(root.resetIndex)
-          onHovered: function(h) { if (h) root.cursorIndex = root.resetIndex }
+          Button {
+            width: parent.width
+            leftAlign: true
+            iconText: root.glyph(0xF05B2) // md-window-restore
+            text: "Reset window"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            hasCursor: root.cursorIndex === root.resetIndex
+            onClicked: root.activate(root.resetIndex)
+            onHovered: function(h) { if (h) root.cursorIndex = root.resetIndex }
+            onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+          }
         }
       }
     }

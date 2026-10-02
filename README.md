@@ -16,10 +16,14 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
   | iPhone 16 Pro | 402 × 874 |
   | iPhone 16 Pro Max | 440 × 956 |
 
-  The preset is the size of the whole browser window, toolbar included. In Chrome the page itself gets 87px less height.
+  The preset is the size of the whole browser window, toolbar included. In Chrome and Chromium the page itself gets 87px less height.
 
-- **Phone sizes.** Chrome can't make a normal window narrower than 500px. For the iPhone presets, Devframe opens the current page in a new toolbar-less window (`--app` mode), so the page gets the full phone size. Logins carry over, and DevTools still work.
+  Presets that don't fit on your screen are dimmed in the popup. You can still pick one: the window then starts at the top-left corner of the screen, so the start of the page stays visible, and a notification says part of it is off-screen.
+
+- **Phone sizes.** Chrome can't make a normal window narrower than 500px. For the iPhone presets, Devframe opens the current page in a new toolbar-less window (`--app` mode), so the page gets the full phone size. Logins carry over, and DevTools still work. On a page that scrolls, the desktop scrollbar takes 15px of the width, where a real phone overlays it.
 - **Incognito.** With the switch on, any preset opens the current page in a new private window at that size instead of resizing your window.
+
+  Phone and incognito windows open in the same browser as the window you started from. With no browser window on the workspace, they open in your default browser.
 - **DevTools.** With the switch on, DevTools opens in its own window to the right of the browser, at the same height. The two are centered together. When you switch tabs, DevTools switches to the new tab.
 - **Workspace.** Buttons 1–10 move the browser and its DevTools to that workspace and take you there, like Super+Shift+number.
 - **Reset.** Tiles the browser back into the layout, closes its DevTools, and closes phone windows.
@@ -41,8 +45,10 @@ To open the popup from a key binding, bind it to `omarchy-shell ugurcanbulut.dev
 ## Requirements
 
 - Omarchy 4 (Hyprland with Lua config)
-- A Chromium-based default browser. Devframe is tested with Google Chrome.
+- A Chromium-based browser. Devframe is tested with Chromium (Omarchy's default) and Google Chrome. Flatpak installs should work but are untested.
 - `jq`, `socat`, `wtype` and `wl-clipboard`, all part of a standard Omarchy install
+
+If something is missing, Devframe shows a notification saying what.
 
 ## Popup keyboard shortcuts
 
@@ -72,8 +78,10 @@ devframe reset
 
 Chrome offers no way for a script to talk to an already-running browser, so Devframe drives it through Hyprland and keyboard shortcuts:
 
-- **Reading the page address.** Phone and incognito windows need the current page's address. Devframe briefly copies it from the address bar and then puts your clipboard back. The address still shows up in your clipboard history.
+- **Reading the page address.** Phone and incognito windows need the current page's address. Devframe briefly copies it from the address bar and then puts your clipboard back. The address still shows up in your clipboard history, and rich text on the clipboard comes back as plain text.
 - **Opening DevTools in its own window.** If your DevTools is docked, Devframe undocks it through the DevTools command menu. Reset docks it back. If you close the DevTools window yourself, Chrome keeps opening DevTools as a separate window until you dock it again (Ctrl+Shift+D inside DevTools).
+
+  The command menu only understands commands in the browser's language, so Devframe does this automatically only when your browser runs in English. Otherwise it asks you to undock DevTools once by hand (DevTools ⋮ menu → Dock side → Undock into separate window). After that, it opens in its own window every time.
 - **Following tabs.** Devframe watches the browser's window title, which changes when you switch tabs. As a result:
   - Switching between tabs with exactly the same title isn't detected.
   - Every switch opens a fresh DevTools for the new tab, so the old tab's console and network history are lost.
