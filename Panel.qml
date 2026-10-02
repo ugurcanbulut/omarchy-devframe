@@ -16,13 +16,14 @@ Panel {
   property bool incognito: false
   property bool devtools: false
   // Keyboard cursor over presets, the workspace grid, the incognito and
-  // DevTools switches, then reset. -1 until the first arrow/j/k press.
+  // DevTools switches, then rotate and reset. -1 until the first arrow/j/k
+  // press.
   property int cursorIndex: -1
 
   readonly property string script: decodeURIComponent(Qt.resolvedUrl("devframe").toString().replace(/^file:\/\//, ""))
 
   // Logical (CSS pixel) sizes; the whole browser window gets this size.
-  readonly property var presets: [
+  readonly property var builtInPresets: [
     { group: "DESKTOP", icon: 0xF0379, label: "Full HD", width: 1920, height: 1080 },
     { group: "DESKTOP", icon: 0xF0322, label: "MacBook Pro 16\"", width: 1728, height: 1117 },
     { group: "DESKTOP", icon: 0xF0322, label: "MacBook Pro 14\"", width: 1512, height: 982 },
@@ -33,12 +34,47 @@ Panel {
     { group: "PHONE", icon: 0xF011C, label: "iPhone 16 Pro", width: 402, height: 874 },
     { group: "PHONE", icon: 0xF011C, label: "iPhone 16 Pro Max", width: 440, height: 956 }
   ]
+
+  // Built-ins plus the `presets` list on this widget's shell.json entry, e.g.
+  // { "label": "Pixel 9", "width": 412, "height": 915, "group": "PHONE" }.
+  // A custom preset joins its group's section, or starts a new one at the
+  // end; `builtInPresets: false` shows only the custom ones.
+  readonly property var presets: {
+    var custom = setting("presets", [])
+    var all = (setting("builtInPresets", true) === false ? [] : builtInPresets)
+      .concat((Array.isArray(custom) ? custom : []).map(customPreset).filter(Boolean))
+    var groups = []
+    all.forEach(function(preset) { if (groups.indexOf(preset.group) < 0) groups.push(preset.group) })
+    return groups.reduce(function(sorted, group) {
+      return sorted.concat(all.filter(function(preset) { return preset.group === group }))
+    }, [])
+  }
+
+  readonly property var groupIcons: ({ DESKTOP: 0xF0379, LAPTOP: 0xF0322, TABLET: 0xF04F6, PHONE: 0xF011C })
+
+  // Skips entries without a sensible size rather than failing on them.
+  function customPreset(entry) {
+    if (!entry || typeof entry !== "object") return null
+    var width = Math.round(Number(entry.width))
+    var height = Math.round(Number(entry.height))
+    if (!(width >= 100 && width <= 10000 && height >= 100 && height <= 10000)) return null
+    var group = String(entry.group || "CUSTOM").toUpperCase()
+    return {
+      group: group,
+      icon: groupIcons[group] || groupIcons.DESKTOP,
+      label: entry.label ? String(entry.label) : width + " × " + height,
+      width: width,
+      height: height
+    }
+  }
+
   readonly property int workspaceCount: 10
   readonly property int workspaceColumns: 5
   readonly property int workspaceStart: presets.length
   readonly property int incognitoIndex: workspaceStart + workspaceCount
   readonly property int devtoolsIndex: incognitoIndex + 1
-  readonly property int resetIndex: incognitoIndex + 2
+  readonly property int rotateIndex: incognitoIndex + 2
+  readonly property int resetIndex: incognitoIndex + 3
 
   // Free area of the focused monitor in logical pixels, minus the bar. The
   // script works on the same monitor.
@@ -88,6 +124,7 @@ Panel {
     else if (index >= workspaceStart && index < incognitoIndex) run(["move", String(index - workspaceStart + 1)])
     else if (index === incognitoIndex) root.incognito = !root.incognito
     else if (index === devtoolsIndex) root.devtools = !root.devtools
+    else if (index === rotateIndex) run(["rotate"])
     else if (index === resetIndex) run(["reset"])
   }
 
@@ -147,12 +184,13 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       // 1-9 pick a preset directly, i flips incognito, d flips DevTools,
-      // r resets.
+      // o rotates, r resets.
       onTextKey: function(t) {
         var n = parseInt(t)
         if (n >= 1 && n <= root.presets.length) root.applyPreset(root.presets[n - 1])
         else if (t === "i") root.incognito = !root.incognito
         else if (t === "d") root.devtools = !root.devtools
+        else if (t === "o") root.activate(root.rotateIndex)
         else if (t === "r") root.activate(root.resetIndex)
       }
 
@@ -302,17 +340,38 @@ Panel {
 
           Item { width: 1; height: Style.space(4) }
 
-          Button {
+          Row {
+            id: actionRow
             width: parent.width
-            leftAlign: true
-            iconText: root.glyph(0xF05B2) // md-window-restore
-            text: "Reset window"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            hasCursor: root.cursorIndex === root.resetIndex
-            onClicked: root.activate(root.resetIndex)
-            onHovered: function(h) { if (h) root.cursorIndex = root.resetIndex }
-            onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+            spacing: Style.space(6)
+
+            readonly property real cellWidth: (width - spacing) / 2
+
+            Button {
+              width: actionRow.cellWidth
+              leftAlign: true
+              iconText: root.glyph(0xF0475) // md-screen-rotation
+              text: "Rotate window"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              hasCursor: root.cursorIndex === root.rotateIndex
+              onClicked: root.activate(root.rotateIndex)
+              onHovered: function(h) { if (h) root.cursorIndex = root.rotateIndex }
+              onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+            }
+
+            Button {
+              width: actionRow.cellWidth
+              leftAlign: true
+              iconText: root.glyph(0xF05B2) // md-window-restore
+              text: "Reset window"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              hasCursor: root.cursorIndex === root.resetIndex
+              onClicked: root.activate(root.resetIndex)
+              onHovered: function(h) { if (h) root.cursorIndex = root.resetIndex }
+              onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+            }
           }
         }
       }

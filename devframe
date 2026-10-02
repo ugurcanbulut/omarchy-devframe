@@ -4,6 +4,7 @@
 #
 #   devframe <width> <height> [--incognito] [--devtools]
 #   devframe move <workspace>
+#   devframe rotate
 #   devframe reset
 #
 # A tabbed browser window is floated, resized, and centered in place. Chrome
@@ -30,7 +31,7 @@ APP_TAG=devframe
 REDOCK_TAG=devframe-redock
 
 usage() {
-  echo "Usage: devframe <width> <height> [--incognito] [--devtools] | devframe move <workspace> | devframe reset" >&2
+  echo "Usage: devframe <width> <height> [--incognito] [--devtools] | devframe move <workspace> | devframe rotate | devframe reset" >&2
   exit 1
 }
 
@@ -621,6 +622,30 @@ move_to() {
   dispatch "hl.dsp.window.move({ window = \"address:$address\", workspace = \"$workspace\" })"
 }
 
+# Swap the floating browser between portrait and landscape, keeping its
+# DevTools beside it.
+rotate() {
+  local target address width height devtools
+
+  target=$(pick_window floating)
+  if [[ -z $target ]]; then
+    notify "No floating browser window on this workspace"
+    exit 1
+  fi
+
+  address=$(jq -r '.address' <<<"$target")
+  read -r height width < <(jq -r '.size | "\(.[0]) \(.[1])"' <<<"$target")
+  if [[ $(jq -r '.app' <<<"$target") != true ]] && ((width < MIN_TABBED_WIDTH)); then
+    notify "Chrome can't make a normal window narrower than ${MIN_TABBED_WIDTH}px, so ${height}×${width} can't be turned to ${width}×${height}"
+    exit 1
+  fi
+
+  devtools=$(find_devtools "$address" | jq -r '.address // empty')
+  warn_if_too_big "$width" "$height" "$([[ -n $devtools ]] && echo true || echo false)"
+  size_in_place "$address" "$width" "$height"
+  [[ -n $devtools ]] && place_pair "$address" "$devtools" "$width" "$height"
+}
+
 reset() {
   local target address devtools
 
@@ -644,11 +669,14 @@ reset() {
 
 trap clear_rules EXIT
 
-[[ ${1:-} =~ ^(reset|watch|move|[0-9]+)$ ]] && check_requirements
+[[ ${1:-} =~ ^(reset|rotate|watch|move|[0-9]+)$ ]] && check_requirements
 
 case ${1:-} in
 reset)
   reset
+  ;;
+rotate)
+  rotate
   ;;
 watch)
   [[ ${2:-} =~ ^0x[0-9a-f]+$ ]] || usage

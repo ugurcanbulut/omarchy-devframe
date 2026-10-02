@@ -26,7 +26,9 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
   Phone and incognito windows open in the same browser as the window you started from. With no browser window on the workspace, they open in your default browser.
 - **DevTools.** With the switch on, DevTools opens in its own window to the right of the browser, at the same height. The two are centered together. When you switch tabs, DevTools switches to the new tab.
 - **Workspace.** Buttons 1–10 move the browser and its DevTools to that workspace and take you there, like Super+Shift+number.
+- **Rotate.** Swaps the window between portrait and landscape, keeping its DevTools beside it. A normal browser window can't be narrower than 500px, so a window only rotates if the new width is at least that; phone windows always rotate.
 - **Reset.** Tiles the browser back into the layout, closes its DevTools, and closes phone windows.
+- **Custom presets.** Add your own sizes, see below.
 
 ## Install
 
@@ -41,6 +43,25 @@ omarchy bar move ugurcanbulut.devframe --section right --index 0
 ```
 
 To open the popup from a key binding, bind it to `omarchy-shell ugurcanbulut.devframe toggle`.
+
+## Custom presets
+
+Add a `presets` list to the Devframe entry in your bar layout in `~/.config/omarchy/shell.json`. Changes show up as soon as you save the file.
+
+```json
+{ "id": "ugurcanbulut.devframe",
+  "presets": [
+    { "label": "Pixel 9", "width": 412, "height": 915, "group": "PHONE" },
+    { "label": "Small laptop", "width": 1366, "height": 768, "group": "LAPTOP" },
+    { "width": 2560, "height": 1440 }
+  ] }
+```
+
+- `width` and `height` are required, in logical (CSS) pixels.
+- `label` is optional. Without it, the preset is named after its size.
+- `group` is optional. A preset in `DESKTOP`, `TABLET` or `PHONE` joins that section after the built-in presets. Any other group gets its own section, and presets without a group go under `CUSTOM`. The groups `DESKTOP`, `LAPTOP`, `TABLET` and `PHONE` get matching icons.
+
+To show only your own presets, add `"builtInPresets": false` to the same entry.
 
 ## Requirements
 
@@ -59,6 +80,7 @@ If something is missing, Devframe shows a notification saying what.
 | `Enter` / `Space` | Activate the selected item |
 | `i` | Turn Incognito on or off |
 | `d` | Turn DevTools on or off |
+| `o` | Rotate |
 | `r` | Reset |
 | `Esc` | Close |
 
@@ -71,6 +93,7 @@ The script behind the widget works on its own too, for example from your own key
 ```bash
 devframe 1920 1080 [--incognito] [--devtools]
 devframe move 3
+devframe rotate
 devframe reset
 ```
 

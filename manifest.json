@@ -16,6 +16,18 @@
     "description": "Test websites at real device sizes: browser presets, DevTools beside it, incognito, workspaces",
     "category": "Tools",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "builtInPresets": true
+    },
+    "schema": [
+      {
+        "key": "builtInPresets",
+        "type": "boolean",
+        "label": "Show built-in presets",
+        "description": "Turn off to show only the presets you add to this widget's presets list in shell.json.",
+        "defaultValue": true
+      }
+    ]
   }
 }
