@@ -2,7 +2,7 @@
 
 # Size the browser on the active workspace to an exact device window size.
 #
-#   devframe <width> <height> [--incognito] [--devtools[=left|right|below]]
+#   devframe <width> <height> [--incognito] [--no-toolbar] [--devtools[=left|right|below]]
 #   devframe move <workspace>
 #   devframe rotate
 #   devframe screenshot
@@ -11,7 +11,8 @@
 #
 # A tabbed browser window is floated, resized, and centered in place. Chrome
 # won't draw a tabbed window narrower than 500px, so phone widths open the
-# current page in a toolbar-less --app window instead. --incognito always opens
+# current page in a toolbar-less --app window instead; --no-toolbar does that
+# at any size, so the page gets the whole window. --incognito always opens
 # a new private window showing the current page. --devtools opens DevTools in
 # its own window beside or below the browser and centers the two together. Reset
 # tiles the window back, or closes it if it is one of the phone windows this
@@ -38,7 +39,7 @@ APP_TAG=devframe
 REDOCK_TAG=devframe-redock
 
 usage() {
-  echo "Usage: devframe <width> <height> [--incognito] [--devtools[=left|right|below]] | devframe move <workspace> | devframe rotate | devframe screenshot | devframe status | devframe reset" >&2
+  echo "Usage: devframe <width> <height> [--incognito] [--no-toolbar] [--devtools[=left|right|below]] | devframe move <workspace> | devframe rotate | devframe screenshot | devframe status | devframe reset" >&2
   exit 1
 }
 
@@ -599,9 +600,12 @@ watch() {
 }
 
 # side: where to open DevTools (left, right, below), or empty to leave
-# DevTools alone.
+# DevTools alone. toolbar: false shows the page alone, in a toolbar-less --app
+# window like the phone sizes use, so the page gets the whole size.
 size() {
-  local width=$1 height=$2 incognito=$3 side=$4 target source url address class=""
+  local width=$1 height=$2 incognito=$3 side=$4 toolbar=$5 target source url address class=""
+  local tabbed=true
+  ((width >= MIN_TABBED_WIDTH)) && [[ $toolbar == true ]] || tabbed=false
 
   if [[ $incognito == true ]]; then
     source=$(pick_window tabbed)
@@ -610,7 +614,7 @@ size() {
       url=$(grab_url "$(jq -r '.address' <<<"$source")")
     fi
 
-    if ((width >= MIN_TABBED_WIDTH)); then
+    if [[ $tabbed == true ]]; then
       address=$(open_new "$width" "$height" false "$class" "$(private_flag "$class")" --new-window ${url:+"$url"}) || exit 1
     elif [[ -n ${url:-} ]]; then
       address=$(open_new "$width" "$height" true "$class" "$(private_flag "$class")" --app="$url") || exit 1
@@ -626,7 +630,7 @@ size() {
     fi
     address=$(jq -r '.address' <<<"$target")
 
-    if [[ $(jq -r '.app' <<<"$target") == true ]] || ((width >= MIN_TABBED_WIDTH)); then
+    if [[ $(jq -r '.app' <<<"$target") == true || $tabbed == true ]]; then
       size_in_place "$address" "$width" "$height"
     else
       url=$(grab_url "$address")
@@ -638,7 +642,7 @@ size() {
     fi
   fi
 
-  local devtools devtools_address
+  local devtools="" devtools_address=""
   if [[ -n $side ]]; then
     devtools_address=$(open_devtools "$address" $(devtools_size "$width" "$height" "$side")) || exit 1
   else
@@ -806,17 +810,18 @@ move)
   ;;
 [0-9]*)
   [[ $1 =~ ^[0-9]+$ && ${2:-} =~ ^[0-9]+$ ]] || usage
-  width=$1 height=$2 incognito=false side=""
+  width=$1 height=$2 incognito=false side="" toolbar=true
   shift 2
   for flag in "$@"; do
     case $flag in
     --incognito) incognito=true ;;
+    --no-toolbar) toolbar=false ;;
     --devtools) side=right ;;
     --devtools=left | --devtools=right | --devtools=below) side=${flag#--devtools=} ;;
     *) usage ;;
     esac
   done
-  size "$width" "$height" "$incognito" "$side"
+  size "$width" "$height" "$incognito" "$side" "$toolbar"
   ;;
 *)
   usage

@@ -17,6 +17,8 @@ Panel {
   // The switches live on this widget's shell.json entry, so they survive bar
   // restarts; loadSwitches() keeps them in step with that entry.
   property bool incognito: false
+  // When on, presets open the page alone in a toolbar-less window, like phones.
+  property bool hideToolbar: false
   property bool devtools: false
   property string devtoolsSide: "right"
   readonly property var devtoolsSides: [
@@ -57,6 +59,7 @@ Panel {
 
   function loadSwitches() {
     incognito = setting("incognito", false) === true
+    hideToolbar = setting("hideToolbar", false) === true
     devtools = setting("devtools", false) === true
     var side = setting("devtoolsSide", "right")
     devtoolsSide = ["left", "right", "below"].indexOf(side) >= 0 ? side : "right"
@@ -139,7 +142,8 @@ Panel {
   readonly property int workspaceColumns: 5
   readonly property int workspaceStart: presets.length
   readonly property int incognitoIndex: workspaceStart + workspaceCount
-  readonly property int devtoolsIndex: incognitoIndex + 1
+  readonly property int toolbarIndex: incognitoIndex + 1
+  readonly property int devtoolsIndex: incognitoIndex + 2
   // The side row only exists while DevTools is on.
   readonly property int sideIndex: devtools ? devtoolsIndex + 1 : -1
   readonly property int rotateIndex: devtoolsIndex + (devtools ? 2 : 1)
@@ -188,6 +192,7 @@ Panel {
   function applyPreset(preset) {
     var args = [String(preset.width), String(preset.height)]
     if (root.incognito) args.push("--incognito")
+    if (root.hideToolbar) args.push("--no-toolbar")
     if (root.devtools) args.push("--devtools=" + root.devtoolsSide)
     run(args)
   }
@@ -196,6 +201,7 @@ Panel {
     if (index >= 0 && index < presets.length) applyPreset(presets[index])
     else if (index >= workspaceStart && index < incognitoIndex) run(["move", String(index - workspaceStart + 1)])
     else if (index === incognitoIndex) saveSwitch("incognito", !root.incognito)
+    else if (index === toolbarIndex) saveSwitch("hideToolbar", !root.hideToolbar)
     else if (index === devtoolsIndex) saveSwitch("devtools", !root.devtools)
     else if (index === sideIndex) cycleDevtoolsSide(1)
     else if (index === rotateIndex) run(["rotate"])
@@ -240,6 +246,7 @@ Panel {
     tooltipText: "Devframe"
       + (root.activeWindow ? " · " + root.activeWindow.width + "×" + root.activeWindow.height : "")
       + (root.incognito ? " · incognito" : "")
+      + (root.hideToolbar ? " · no toolbar" : "")
       + (root.devtools ? " · DevTools " + root.devtoolsSide : "")
     // Refresh the size shown in the tooltip each time the pointer arrives.
     onTooltipHoveredChanged: if (tooltipHovered) root.refreshStatus()
@@ -266,12 +273,13 @@ Panel {
       onActivateRequested: root.activate(root.cursorIndex)
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // 1-9 pick a preset directly, i flips incognito, d flips DevTools,
-      // o rotates, s takes a screenshot, r resets.
+      // 1-9 pick a preset directly, i flips incognito, t the toolbar,
+      // d DevTools, o rotates, s takes a screenshot, r resets.
       onTextKey: function(t) {
         var n = parseInt(t)
         if (n >= 1 && n <= root.presets.length) root.applyPreset(root.presets[n - 1])
         else if (t === "i") root.activate(root.incognitoIndex)
+        else if (t === "t") root.activate(root.toolbarIndex)
         else if (t === "d") root.activate(root.devtoolsIndex)
         else if (t === "o") root.activate(root.rotateIndex)
         else if (t === "s") root.activate(root.screenshotIndex)
@@ -406,6 +414,21 @@ Panel {
             hasCursor: root.cursorIndex === root.incognitoIndex
             onClicked: root.activate(root.incognitoIndex)
             onHovered: function(h) { if (h) root.cursorIndex = root.incognitoIndex }
+            onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
+          }
+
+          Item { width: 1; height: Style.space(4) }
+
+          Toggle {
+            width: parent.width
+            label: "Hide toolbar"
+            description: "Show only the page, without tabs and address bar"
+            checked: root.hideToolbar
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            hasCursor: root.cursorIndex === root.toolbarIndex
+            onClicked: root.activate(root.toolbarIndex)
+            onHovered: function(h) { if (h) root.cursorIndex = root.toolbarIndex }
             onHasCursorChanged: if (hasCursor) root.ensureVisible(this)
           }
 

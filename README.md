@@ -30,8 +30,9 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
 
 - **Phone sizes.** Chrome can't make a normal window narrower than 500px. For the iPhone presets, Devframe opens the current page in a new toolbar-less window (`--app` mode), so the page gets the full phone size. Logins carry over, and DevTools still work. On a page that scrolls, the desktop scrollbar takes 15px of the width, where a real phone overlays it.
 - **Incognito.** With the switch on, any preset opens the current page in a new private window at that size instead of resizing your window.
+- **Hide toolbar.** With the switch on, any preset opens the current page in a toolbar-less window, the same way the phone sizes do, so the page itself gets the full size: exactly 1920 × 1080 for Full HD instead of 1920 × 993. Works together with Incognito and DevTools.
 
-  Phone and incognito windows open in the same browser as the window you started from. With no browser window on the workspace, they open in your default browser.
+  Phone, incognito and toolbar-less windows open in the same browser as the window you started from. With no browser window on the workspace, they open in your default browser.
 - **DevTools.** With the switch on, DevTools opens in its own window next to the browser, and the two are centered together. Choose where it goes under the switch:
   - **Left** or **Right:** at the browser's height, up to 900px wide.
   - **Below:** at least as wide as the browser (720px minimum), and as tall as the screen allows, up to 600px.
@@ -40,10 +41,10 @@ An [Omarchy](https://omarchy.org) bar widget for testing websites at real device
 - **Workspace.** Buttons 1–10 move the browser and its DevTools to that workspace and take you there, like Super+Shift+number.
 - **Rotate.** Swaps the window between portrait and landscape, keeping its DevTools in place. A normal browser window can't be narrower than 500px, so a window only rotates if the new width is at least that; phone windows always rotate.
 - **Capture.** Takes a screenshot of just the browser window at its device size, the way Omarchy's own screenshots work: saved to your Pictures folder as `devframe-<width>x<height>-<date>.png`, copied to the clipboard, and announced with a notification you can click to edit it.
-- **Reset.** Tiles the browser back into the layout, closes its DevTools, and closes phone windows.
+- **Reset.** Tiles the browser back into the layout, closes its DevTools, and closes phone and toolbar-less windows.
 - **Custom presets.** Add your own sizes, see below.
 
-The Incognito and DevTools switches, and the DevTools position, are remembered across restarts. They're saved on the Devframe entry in `~/.config/omarchy/shell.json`.
+The Incognito, Hide toolbar and DevTools switches, and the DevTools position, are remembered across restarts. They're saved on the Devframe entry in `~/.config/omarchy/shell.json`.
 
 ## Install
 
@@ -94,6 +95,7 @@ If something is missing, Devframe shows a notification saying what.
 | `h` `j` `k` `l` / arrows | Move the cursor |
 | `Enter` / `Space` | Activate the selected item |
 | `i` | Turn Incognito on or off |
+| `t` | Turn Hide toolbar on or off |
 | `d` | Turn DevTools on or off |
 | `h` / `l` on the Left · Right · Below row | Pick where DevTools goes |
 | `o` | Rotate |
@@ -108,7 +110,7 @@ Right-clicking the bar icon also turns Incognito on or off.
 The script behind the widget works on its own too, for example from your own key bindings. It lives at `~/.config/omarchy/plugins/ugurcanbulut.devframe/devframe`:
 
 ```bash
-devframe 1920 1080 [--incognito] [--devtools[=left|right|below]]
+devframe 1920 1080 [--incognito] [--no-toolbar] [--devtools[=left|right|below]]
 devframe move 3
 devframe rotate
 devframe screenshot
