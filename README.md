@@ -2,7 +2,7 @@
 
 An [Omarchy](https://omarchy.org) bar widget for testing websites at real device sizes. Click the icon, pick a device, and the browser on your current workspace becomes a floating window of exactly that size, centered on the screen.
 
-![The iPad landscape preset with DevTools in its own window beside the browser, and the Devframe popup open from the bar](docs/screenshot.png)
+![The Full HD preset with DevTools in its own window beside the browser, and the Devframe popup open from the bar](docs/screenshot-full-hd.png)
 
 ## Features
 
