@@ -110,9 +110,12 @@ Panel {
   // A custom preset joins its group's section, or starts a new one at the
   // end; `builtInPresets: false` shows only the custom ones.
   readonly property var presets: {
+    // After a shell restart the list arrives as a Qt sequence, which
+    // Array.isArray turns down; copy it into a real array instead.
     var custom = setting("presets", [])
+    var mine = custom && typeof custom === "object" && typeof custom.length === "number" ? Array.prototype.slice.call(custom) : []
     var all = (setting("builtInPresets", true) === false ? [] : builtInPresets)
-      .concat((Array.isArray(custom) ? custom : []).map(customPreset).filter(Boolean))
+      .concat(mine.map(customPreset).filter(Boolean))
     var groups = []
     all.forEach(function(preset) { if (groups.indexOf(preset.group) < 0) groups.push(preset.group) })
     return groups.reduce(function(sorted, group) {
